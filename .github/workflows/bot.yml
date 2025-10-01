@@ -1,0 +1,61 @@
+name: Vinted Bot (cron)
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt || pip install httpx pydantic rich python-dotenv
+
+      - name: Prepare env file
+        run: |
+          echo "RUN_ONCE=1" >> .env
+          echo "POLL_INTERVAL=60" >> .env
+          echo "MAX_PAGES=1" >> .env
+          # On peut ajouter des variables supplémentaires ici
+          if [ -n "${{ secrets.QUERIES }}" ]; then echo "QUERIES=${{ secrets.QUERIES }}" >> .env; fi
+          if [ -n "${{ secrets.DISCORD_WEBHOOK }}" ]; then echo "DISCORD_WEBHOOK=${{ secrets.DISCORD_WEBHOOK }}" >> .env; fi
+
+      - name: Run bot (one-shot)
+        run: |
+          python src/main.py
+
+      - name: Persist seen IDs if changed
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -f data/seen_ids.json ]; then
+            git add data/seen_ids.json || true
+          fi
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update seen ids [skip ci]" || true
+            git push || true
+          fi
