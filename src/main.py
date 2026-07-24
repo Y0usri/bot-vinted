@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 import os
+import sys
 from typing import List, Set, Iterable
 from pathlib import Path
 import json
@@ -8,6 +9,18 @@ import re
 import logging
 import random
 import time
+
+# Sur Windows, la console n'est pas en UTF-8 par défaut : les caractères
+# accentués s'affichent en mojibake (ex: "d�j�" au lieu de "déjà").
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:  # noqa
+            pass
+
+import smtplib
+from email.mime.text import MIMEText
 
 import httpx
 from rich.console import Console
@@ -72,8 +85,16 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))  # secondes
 MIN_PRICE = os.getenv("MIN_PRICE")
 MAX_PRICE = os.getenv("MAX_PRICE")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
+EMAIL_TO = os.getenv("EMAIL_TO")
+EMAIL_ENABLED = bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD and EMAIL_TO)
 RUN_ONCE = os.getenv("RUN_ONCE") == "1"
 SEEN_FILE = Path(os.getenv("SEEN_FILE", "data/seen_ids.json"))
+MAX_SEEN_IDS = int(os.getenv("MAX_SEEN_IDS", "20000"))
 INCLUDE_REGEX = os.getenv("INCLUDE_REGEX", "").strip()
 EXCLUDE_REGEX = os.getenv("EXCLUDE_REGEX", "").strip()
 MAX_PAGES = int(os.getenv("MAX_PAGES", "1"))
@@ -253,6 +274,17 @@ async def fetch_items_for_query(client: httpx.AsyncClient, search_text: str) -> 
                                 continue
                         if ts_candidate and ts_candidate >= MIN_VALID_TS:
                             raw_ts = ts_candidate
+                if raw_ts < MIN_VALID_TS:
+                    # L'API catalog/items ne renvoie plus de champ de date direct
+                    # (retiré côté Vinted). On approxime avec l'horodatage de la
+                    # photo principale, qui correspond en pratique à la mise en
+                    # ligne de l'annonce à quelques minutes près.
+                    photo = it.get("photo") or (it.get("photos") or [{}])[0]
+                    photo_ts = ((photo or {}).get("high_resolution") or {}).get("timestamp")
+                    if photo_ts:
+                        photo_ts = int(photo_ts)
+                        if photo_ts >= MIN_VALID_TS:
+                            raw_ts = photo_ts
                 item = Item(
                     id=it["id"],
                     title=it.get("title", ""),
@@ -308,7 +340,14 @@ def load_seen_ids(path: Path) -> Set[int]:
 
 def save_seen_ids(path: Path, ids: Set[int]) -> None:
     try:
-        path.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+        sorted_ids = sorted(ids)
+        # Les ID Vinted sont globalement croissants dans le temps : au-delà de
+        # MAX_SEEN_IDS, on ne garde que les plus récents pour éviter que ce
+        # fichier ne grossisse indéfiniment.
+        if len(sorted_ids) > MAX_SEEN_IDS:
+            sorted_ids = sorted_ids[-MAX_SEEN_IDS:]
+            ids.intersection_update(sorted_ids)
+        path.write_text(json.dumps(sorted_ids), encoding="utf-8")
     except Exception as e:  # noqa
         logger.error("Echec écriture fichier seen_ids: %s", e)
 
@@ -321,7 +360,7 @@ async def notify_console(new_items: List[Item]):
     table.add_column("Titre")
     table.add_column("Prix")
     table.add_column("Lien")
-    table.add_column("Date")
+    table.add_column("Date (approx.)")
     if len(QUERIES) > 1:
         table.add_column("Mot-clé")
     for item in new_items:
@@ -336,10 +375,8 @@ async def notify_console(new_items: List[Item]):
         table.add_row(*row)
     console.print(table)
 
-async def notify_discord(new_items: List[Item]):
-    if not DISCORD_WEBHOOK or not new_items:
-        return
-    content_lines = [f"{len(new_items)} nouvelle(s) annonce(s) pour: {', '.join(QUERIES)}"]
+def _format_item_lines(new_items: List[Item]) -> List[str]:
+    lines = []
     for it in new_items:
         if it.created_at_ts >= MIN_VALID_TS:
             local_dt = datetime.fromtimestamp(it.created_at_ts, tz=timezone.utc).astimezone()
@@ -347,15 +384,46 @@ async def notify_discord(new_items: List[Item]):
         else:
             date_str = "?"
         if len(QUERIES) > 1:
-            content_lines.append(f"• [{getattr(it, '_query', '?')}] {it.title} - {it.price} {it.currency} - {date_str} - {it.url}")
+            lines.append(f"• [{getattr(it, '_query', '?')}] {it.title} - {it.price} {it.currency} - {date_str} - {it.url}")
         else:
-            content_lines.append(f"• {it.title} - {it.price} {it.currency} - {date_str} - {it.url}")
+            lines.append(f"• {it.title} - {it.price} {it.currency} - {date_str} - {it.url}")
+    return lines
+
+async def notify_discord(new_items: List[Item]):
+    if not DISCORD_WEBHOOK or not new_items:
+        return
+    header = f"{len(new_items)} nouvelle(s) annonce(s) pour: {', '.join(QUERIES)}"
+    content_lines = [header] + _format_item_lines(new_items)
     payload = {"content": "\n".join(content_lines)[:1900]}
     async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
             await client.post(DISCORD_WEBHOOK, json=payload, timeout=10)
         except Exception as e:  # noqa
             console.print(f"[red]Erreur envoi Discord: {e}")
+
+def _send_email_sync(subject: str, body: str) -> None:
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_FROM
+    msg["To"] = EMAIL_TO
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+        smtp.starttls()
+        smtp.login(SMTP_USER, SMTP_PASSWORD)
+        smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+
+async def notify_email(new_items: List[Item]):
+    if not EMAIL_ENABLED or not new_items:
+        return
+    header = f"{len(new_items)} nouvelle(s) annonce(s) pour: {', '.join(QUERIES)}"
+    body = "\n".join([header] + _format_item_lines(new_items))
+    subject = f"[Bot Vinted] {len(new_items)} nouvelle(s) annonce(s)"
+    try:
+        # smtplib est bloquant : on l'exécute hors de la boucle asyncio.
+        await asyncio.to_thread(_send_email_sync, subject, body)
+        logger.info("E-mail envoyé (%s annonce(s)) à %s", len(new_items), EMAIL_TO)
+    except Exception as e:  # noqa
+        console.print(f"[red]Erreur envoi e-mail: {e}")
+        logger.error("Echec envoi e-mail: %s", e)
 
 async def main_loop():
     seen: Set[int] = load_seen_ids(SEEN_FILE)
@@ -373,6 +441,7 @@ async def main_loop():
                 if new_items:
                     await notify_console(new_items)
                     await notify_discord(new_items)
+                    await notify_email(new_items)
                     save_seen_ids(SEEN_FILE, seen)
                 else:
                     console.log("Aucune nouvelle annonce.")

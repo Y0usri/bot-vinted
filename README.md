@@ -3,31 +3,31 @@
 Objectif: Surveiller les nouvelles annonces Vinted contenant des mangas "One Piece" et notifier avec:
 - Titre de l'annonce
 - Prix
-- Age (temps écoulé depuis la publication)
+- Âge approximatif (temps écoulé depuis la mise en ligne, voir note ci-dessous)
 - Lien
 
 Fonctionnalités actuelles:
 - Polling périodique (intervalle configurable)
 - Multi-pages (`MAX_PAGES`)
 - Filtrage prix min/max
-- Persistance des IDs déjà vus (`data/seen_ids.json`)
+- Persistance des IDs déjà vus (`data/seen_ids.json`, plafonnée à `MAX_SEEN_IDS`)
 - Filtrage regex inclusion / exclusion (`INCLUDE_REGEX`, `EXCLUDE_REGEX`)
-- Notification console Rich + option Discord webhook
-- Logging fichier (`bot.log`) + mode debug (`DEBUG=1`)
+- Notification console Rich, e-mail (SMTP) et/ou Discord webhook
+- Logging fichier (`bot.log`, non versionné) + mode debug (`DEBUG=1`)
 - Option exécution unique (`RUN_ONCE=1`)
 
 ## Approche
-1. Scraper ou utiliser une API non officielle de Vinted (les requêtes publiques JSON) en simulant un navigateur.
+1. Utiliser l'API non officielle de Vinted (`/api/v2/catalog/items`) en simulant un navigateur.
 2. Requêtes périodiques (polling) toutes les X minutes.
 3. Stocker les IDs déjà vus pour ne notifier que les nouvelles annonces.
-4. Envoi de notification (console, email, Discord webhook, etc.).
+4. Envoi de notification (console, e-mail, Discord webhook).
 
-## Stack proposée
+## Stack
 - Python 3.11+
 - `httpx` (requêtes HTTP asynchrones)
 - `pydantic` (validation des données)
 - `rich` (affichage console)
-- Optionnel: `aiofiles` (persistance simple) ou SQLite.
+- `smtplib` (notification e-mail, inclus dans la bibliothèque standard)
 
 ## Variables d'environnement
 Essentielles:
@@ -36,9 +36,12 @@ Essentielles:
 
 Optionnelles:
 - MIN_PRICE / MAX_PRICE
+- QUERIES (plusieurs recherches, séparées par `;` ou `,`)
 - DISCORD_WEBHOOK
+- SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / EMAIL_FROM / EMAIL_TO (notification e-mail — les 5 premières sont requises pour l'activer)
 - RUN_ONCE=1 (test une seule itération)
 - SEEN_FILE (par défaut `data/seen_ids.json`)
+- MAX_SEEN_IDS (nombre max d'ID conservés, défaut 20000)
 - INCLUDE_REGEX (regex d'inclusion – si défini, on ne garde que les titres qui matchent)
 - EXCLUDE_REGEX (regex d'exclusion)
 - MAX_PAGES (pagination, défaut 1)
@@ -60,10 +63,10 @@ Dans le fichier `bot.yml` changer la ligne cron:
 ```
 Ex: toutes les 10 minutes => `*/10 * * * *`
 
-### Limites
-- GitHub Actions n'est pas prévu pour du temps réel (latence jusqu'à ~1 min possible).
-- Éviter trop de mots-clés + faible intervalle pour réduire risque de 403.
+### Limites connues
+- GitHub Actions n'exécute pas les cron schedules à l'heure exacte : sur un dépôt peu actif, un cron `*/5 * * * *` peut en pratique se déclencher toutes les 1 à 2 heures ("best effort", limite documentée par GitHub, pas un bug de ce projet). Pour une surveillance quasi temps réel, héberger le bot sur une machine dédiée (VPS, Raspberry Pi) plutôt que sur GitHub Actions.
+- Vinted ne fournit plus de champ de date direct dans les résultats de recherche (`created_at_ts` a disparu de l'API début 2026). L'âge affiché est donc approximé à partir de l'horodatage de la photo principale de l'annonce, généralement fiable à quelques minutes près.
+- Éviter trop de mots-clés + faible intervalle pour réduire le risque de 403.
 
 ## Avertissement
 Vinted n'a pas d'API publique officielle. Respecter les CGU. Ne pas surcharger le service (gardez un intervalle raisonnable > 30s, évitez d'augmenter trop `MAX_PAGES`).
-
