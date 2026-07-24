@@ -25,6 +25,7 @@ from email.mime.text import MIMEText
 import httpx
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
 from dotenv import load_dotenv
 
 # Tentative d'import pydantic, sinon fallback dataclass
@@ -425,7 +426,29 @@ async def notify_email(new_items: List[Item]):
         console.print(f"[red]Erreur envoi e-mail: {e}")
         logger.error("Echec envoi e-mail: %s", e)
 
+def print_config_banner():
+    price_range = f"{MIN_PRICE or '0'} - {MAX_PRICE or '∞'} EUR"
+    interval = "une seule exécution" if RUN_ONCE else f"{POLL_INTERVAL}s entre deux scans"
+    channels = ["console"]
+    if EMAIL_ENABLED:
+        channels.append("e-mail")
+    if DISCORD_WEBHOOK:
+        channels.append("Discord")
+    lines = [
+        f"[bold]Recherche(s)[/bold] : {', '.join(QUERIES)}  ·  [bold]Filtre prix[/bold] : {price_range}",
+        f"[bold]Intervalle[/bold]   : {interval}  ·  [bold]Notifications[/bold] : {', '.join(channels)}",
+    ]
+    filters = []
+    if INCLUDE_REGEX:
+        filters.append(f"inclusion=/{INCLUDE_REGEX}/")
+    if EXCLUDE_REGEX:
+        filters.append(f"exclusion=/{EXCLUDE_REGEX}/")
+    if filters:
+        lines.append(f"[bold]Regex[/bold]        : {'  ·  '.join(filters)}")
+    console.print(Panel("\n".join(lines), title="Bot Vinted — configuration active", border_style="cyan"))
+
 async def main_loop():
+    print_config_banner()
     seen: Set[int] = load_seen_ids(SEEN_FILE)
     if seen:
         console.log(f"{len(seen)} ID(s) déjà connus chargés depuis {SEEN_FILE}.")
