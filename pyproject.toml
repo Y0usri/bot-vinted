@@ -1,7 +1,7 @@
 [project]
-name = "bot-vinted-onepiece"
+name = "bot-vinted"
 version = "0.2.0"
-description = "Bot de surveillance des annonces Vinted One Piece"
+description = "Bot de veille Vinted : surveille une ou plusieurs recherches et notifie les nouvelles annonces"
 authors = [ { name = "Yousri Bouchrika" } ]
 requires-python = ">=3.11"
 dependencies = [

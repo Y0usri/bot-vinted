@@ -1,10 +1,12 @@
-# Bot Vinted One Piece
+# Bot Vinted
 
-Objectif: Surveiller les nouvelles annonces Vinted contenant des mangas "One Piece" et notifier avec:
+Bot de veille pour Vinted : surveille en continu une ou plusieurs recherches (n'importe quel mot-clé — vêtements, mangas, objets...) et notifie dès qu'une nouvelle annonce correspond, avec :
 - Titre de l'annonce
 - Prix
 - Âge approximatif (temps écoulé depuis la mise en ligne, voir note ci-dessous)
 - Lien
+
+Le dépôt est configuré par défaut sur la recherche `one piece tome` (usage personnel), mais `QUERY`/`QUERIES` acceptent n'importe quel texte : c'est un outil de veille générique, pas un bot spécifique à un seul produit.
 
 Fonctionnalités actuelles:
 - Polling périodique (intervalle configurable)
